@@ -11,6 +11,9 @@
 #  include <Windows.h>
 #endif
 
+#include "Pixel.h"
+using FasTC::Pixel;
+
 #include "Image.h"
 #include "ImageFile.h"
 
@@ -20,40 +23,65 @@ int _tmain(int argc, _TCHAR* argv[]) {
 int main(int argc, char **argv) {
 #endif
 
-  if(argc != 3) {
-    fprintf(stderr, "Usage: compare <img1> <img2>\n");
+  if(argc != 2) {
+    fprintf(stderr, "Usage: sc <img1>\n");
     return 1;
   }
 
-  ImageFile img1f (argv[1]);
-  if(!img1f.Load()) {
+  ImageFile imgFile (argv[1]);
+  if(!imgFile.Load()) {
     fprintf(stderr, "Error loading file: %s\n", argv[1]);
     return 1;
   }
 
-  ImageFile img2f (argv[2]);
-  if(!img2f.Load()) {
-    fprintf(stderr, "Error loading file: %s\n", argv[2]);
-    return 1;
+  FasTC::Image<> *img = imgFile.GetImage();
+
+  const int kWidth = img->GetWidth();
+  const int kHeight = img->GetHeight();
+  const int nPixels = kWidth * kHeight;
+  const uint32 pixelBufSz = nPixels * sizeof(FasTC::Pixel);
+
+  FasTC::Pixel *pixels = new FasTC::Pixel[pixelBufSz];
+  memcpy(pixels, img->GetPixels(), pixelBufSz);
+
+  uint32 *rawPixels = new uint32[kWidth * kHeight];
+
+  for(int i = 0; i < nPixels; i++) {
+    // Pixels are stored as little endian ARGB, so we want ABGR
+    pixels[i].Shuffle(0x6C); // 01 10 11 00
+    rawPixels[i] = pixels[i].Pack();
   }
 
-  FasTC::Image<> img1(*img1f.GetImage());
-  FasTC::Image<> img2(*img2f.GetImage());
+  int *labels = new int[nPixels];
+  int numLabels;
 
-  double PSNR = img1.ComputePSNR(&img2);
-  if(PSNR > 0.0) {
-    fprintf(stdout, "PSNR: %.3f\n", PSNR);
-  }
-  else {
-    fprintf(stderr, "Error computing PSNR\n");
+  SLIC slic;
+  slic.PerformSLICO_ForGivenStepSize(
+    rawPixels,
+	kWidth,
+    kHeight,
+    labels,
+    numLabels,
+	6, 1.0);
+
+  slic.DrawContoursAroundSegments(
+	rawPixels,
+	labels,
+	kWidth,
+	kHeight,
+	0xFF000000);
+
+  for(int i = 0; i < nPixels; i++) {
+    pixels[i].Unpack(rawPixels[i]);
+    pixels[i].Shuffle(0x6C);
   }
 
-  double SSIM = img1.ComputeSSIM(&img2);
-  if(SSIM > 0.0) {
-    fprintf(stdout, "SSIM: %.9f\n", SSIM);
-  } else {
-    fprintf(stderr, "Error computing MSSIM\n");
-  }
+  FasTC::Image<> outImg(kWidth, kHeight, pixels);
+  ImageFile outImgFile("out.png", eFileFormat_PNG, outImg);
+  outImgFile.Write();
 
+  delete [] labels;
+  delete [] rawPixels;
+  delete [] pixels;
   return 0;
 }
