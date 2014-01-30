@@ -36,6 +36,7 @@ class SLIC
 public:
 	SLIC();
 	virtual ~SLIC();
+
 	//============================================================================
 	// Superpixel segmentation for a given step size (superpixel size ~= step*step)
 	//============================================================================
@@ -47,6 +48,7 @@ public:
 		int&						numlabels,
 		const int&					STEP,
 		const double&				m);
+
 	//============================================================================
 	// Superpixel segmentation for a given number of superpixels
 	//============================================================================
@@ -68,6 +70,7 @@ public:
 		const int&					height,
 		const string&				filename,
 		const string&				path);
+
 	//============================================================================
 	// Function to draw boundaries around superpixels of a given 'color'.
 	// Can also be used to draw boundaries around supervoxels, i.e layer by layer.
@@ -100,6 +103,7 @@ private:
 		int*						klabels,
 		const int&					STEP,
 		const int&					NUMITR);
+
 	//============================================================================
 	// Pick seeds for superpixels when step size of superpixels is given.
 	//============================================================================
@@ -112,6 +116,7 @@ private:
 		const int&					STEP,
 		const bool&					perturbseeds,
 		const vector<double>&		edgemag);
+
 	//============================================================================
 	// Pick seeds for superpixels when number of superpixels is input.
 	//============================================================================
@@ -135,6 +140,7 @@ private:
 		vector<double>&				kseedsx,
 		vector<double>&				kseedsy,
 		const vector<double>&		edges);
+
 	//============================================================================
 	// Detect color edges, to help PerturbSeeds()
 	//============================================================================
@@ -145,6 +151,7 @@ private:
 		const int&					width,
 		const int&					height,
 		vector<double>&				edges);
+
 	//============================================================================
 	// xRGB to XYZ conversion; helper for RGB2LAB()
 	//============================================================================
@@ -155,6 +162,7 @@ private:
 		double&						X,
 		double&						Y,
 		double&						Z);
+
 	//============================================================================
 	// sRGB to CIELAB conversion
 	//============================================================================
@@ -165,6 +173,7 @@ private:
 		double&						lval,
 		double&						aval,
 		double&						bval);
+
 	//============================================================================
 	// sRGB to CIELAB conversion for 2-D images
 	//============================================================================
@@ -173,6 +182,7 @@ private:
 		double*&					lvec,
 		double*&					avec,
 		double*&					bvec);
+
 	//============================================================================
 	// sRGB to CIELAB conversion for 3-D volumes
 	//============================================================================
