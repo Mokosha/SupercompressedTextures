@@ -174,6 +174,43 @@ static uint8 FloatToChannel(const float &f) {
   return CastChannel(255.0f * f);
 }
 
+// http://escher.elis.ugent.be/publ/Edocs/DOC/P105_213.pdf
+static Pixel RGB2YCoCg(const Pixel &p) {
+  int16 Co = static_cast<int16>(p.R()) - static_cast<int16>(p.B());
+  int16 t = static_cast<int16>(p.B()) + (Co >> 1);
+  int16 Cg = static_cast<int16>(p.G()) - t;
+  int16 Y = t + (Cg >> 1);
+
+  Pixel ret;
+  ret.R() = Y;
+  ret.G() = Co;
+  ret.B() = Cg;
+  ret.A() = p.A();
+  return ret;
+}
+
+static Pixel YCoCg2RGB(const Pixel &p) {
+  int16 Y = static_cast<int16>(p.R());
+  int16 Co = static_cast<int16>(p.G());
+  int16 Cg = static_cast<int16>(p.B());
+
+  int16 t = Y - (Cg >> 1);
+  int16 G = Cg + t;
+  int16 B = t - (Co >> 1);
+  int16 R = Co + B;
+
+  assert(R >= 0);
+  assert(G >= 0);
+  assert(B >= 0);
+
+  Pixel ret;
+  ret.R() = R;
+  ret.G() = G;
+  ret.B() = B;
+  ret.A() = p.A();
+  return ret;
+}
+
 static Pixel Vec4fToPixel(const Vec4f &v) {
   Pixel p;
   p.R() = CastChannel(Clamp(0.0f, 255.0f, v[0]));
@@ -191,13 +228,21 @@ class Region {
   Pixel m_Endpoints[2];
   std::vector<Pixel>::const_iterator m_PixelItr;
   std::vector<Pixel> m_Pixels;
-  std::vector<uint8> m_InterpolationValues;
+  std::vector<uint8> m_Interp;
+  std::vector<uint8> m_LumaInterp;
 
-  double CompressVecs(const std::vector<Vec4f> &pts) {
+  double CompressVecs(std::vector<Vec4f> pts) {
 
 //    for(const auto &p : pts) {
 //      fprintf(stderr, "%s: <%.2f, %.2f, %.2f, %.2f>\n", "Pt", p.X(), p.Y(), p.Z(), p.W());
 //    }
+
+    std::vector<float> firstChannel;
+    firstChannel.reserve(pts.size());
+    for(auto &p : pts) {
+      firstChannel.push_back(p[0]);
+      p[0] = 255.0f;
+    }
 
     Vec4f centroid = Vec4f(0, 0, 0, 0);
     for(const auto &p : pts) {
@@ -224,16 +269,34 @@ class Region {
       m_Endpoints[1] = Vec4fToPixel(centroid + (axis * b));
     }
 
-    m_InterpolationValues.reserve(m_Pixels.size());
+    // Luma...
+    float fmin = *min_element(std::begin(firstChannel), std::end(firstChannel));
+    float fmax = *max_element(std::begin(firstChannel), std::end(firstChannel));
+    m_Endpoints[0].R() = static_cast<int16>(fmin);
+    m_Endpoints[1].R() = static_cast<int16>(fmax);
+
+    m_LumaInterp.reserve(m_Pixels.size());
+    m_Interp.reserve(m_Pixels.size());
     for(const auto &pt : pts) {
+      auto p = pt;
+      float f = p[0];
+
       if(b == a) {
-        m_InterpolationValues.push_back(0);
+        m_Interp.push_back(0);
       } else {
-        float d = (pt - centroid).Dot(axis);
+        p[0] = 255.0f;
+        float d = (p - centroid).Dot(axis);
         float nd = (d - a) / (b - a);
         assert(0.0f <= nd && nd <= 1.0f);
-      
-        m_InterpolationValues.push_back(FloatToChannel(nd));
+        m_Interp.push_back(FloatToChannel(nd));
+      }
+
+      if(fmax == fmin) {
+        m_LumaInterp.push_back(0);
+      } else {
+        float d = (f - fmin) / (fmax - fmin);
+        assert(0.0f <= d && d <= 1.0f);
+        m_LumaInterp.push_back(FloatToChannel(d));
       }
     }
 
@@ -268,41 +331,50 @@ public:
     std::vector<Vec4f> rgbaVecs;
     rgbaVecs.reserve(m_Pixels.size());
 
-    if(opaque) {
+    assert(opaque);
+//    if(opaque) {
 
       m_Endpoints[0].A() = m_Endpoints[1].A() = 255;
 
       for(const auto &p : m_Pixels) {
+        Pixel trans = RGB2YCoCg(p);
         Vec4f v;
-        v[0] = static_cast<float>(p.R());
-        v[1] = static_cast<float>(p.G());
-        v[2] = static_cast<float>(p.B());
+        v[0] = static_cast<float>(trans.R());
+        v[1] = static_cast<float>(trans.G());
+        v[2] = static_cast<float>(trans.B());
         v[3] = 255.0f;
         rgbaVecs.push_back(v);
       }
-    } else {
-
-      for(const auto &p : m_Pixels) {
-        Vec4f v;
-        v[0] = static_cast<float>(p.R());
-        v[1] = static_cast<float>(p.G());
-        v[2] = static_cast<float>(p.B());
-        v[3] = static_cast<float>(p.A());
-        rgbaVecs.push_back(v);
-      }
-    }
+//    } else {
+//
+//      for(const auto &p : m_Pixels) {
+//        Vec4f v;
+//        v[0] = static_cast<float>(p.R());
+//        v[1] = static_cast<float>(p.G());
+//        v[2] = static_cast<float>(p.B());
+//        v[3] = static_cast<float>(p.A());
+//        rgbaVecs.push_back(v);
+//      }
+//    }
 
     return CompressVecs(rgbaVecs);
   }
 
   void Reconstruct() {
     m_Pixels.clear();
-    m_Pixels.reserve(m_InterpolationValues.size());
-    for(const auto &v : m_InterpolationValues) {
-      float nd = static_cast<float>(v) / 255.0f;
-      Pixel p = m_Endpoints[0] * (1 - nd) + m_Endpoints[1] * nd;
+    m_Pixels.reserve(m_Interp.size());
+
+    for(uint32 i = 0; i < m_Interp.size(); i++) {
+      const auto &v = m_Interp[i];
+      const auto &y = m_LumaInterp[i];
+
+      float yd = static_cast<float>(y) / 255.0f;
+      float vd = static_cast<float>(v) / 255.0f;
+
+      Pixel p = m_Endpoints[0] * (1 - vd) + m_Endpoints[1] * vd;
+      p.R() = m_Endpoints[0].R() * (1 - yd) + m_Endpoints[1].R() * yd;
 //      PrintPixel("Reconstructed", p);
-      m_Pixels.push_back(p);
+      m_Pixels.push_back(YCoCg2RGB(p));
     }
 
     ResetPixelItr();
