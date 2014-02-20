@@ -18,10 +18,11 @@
 #include "Vector4.h"
 #include "MatrixSquare.h"
 using FasTC::MatrixSquare;
-typedef FasTC::Vector4<float> Vec4f;
+using FasTC::Vec4f;
 
 #include "Pixel.h"
 using FasTC::Pixel;
+using FasTC::YCoCgPixel;
 
 #include "Image.h"
 #include "ImageFile.h"
@@ -174,48 +175,11 @@ static uint8 FloatToChannel(const float &f) {
   return CastChannel(255.0f * f);
 }
 
-// http://escher.elis.ugent.be/publ/Edocs/DOC/P105_213.pdf
-static Pixel RGB2YCoCg(const Pixel &p) {
-  int16 Co = static_cast<int16>(p.R()) - static_cast<int16>(p.B());
-  int16 t = static_cast<int16>(p.B()) + (Co >> 1);
-  int16 Cg = static_cast<int16>(p.G()) - t;
-  int16 Y = t + (Cg >> 1);
-
-  Pixel ret;
-  ret.R() = Y;
-  ret.G() = Co;
-  ret.B() = Cg;
-  ret.A() = p.A();
-  return ret;
-}
-
-static Pixel YCoCg2RGB(const Pixel &p) {
-  int16 Y = static_cast<int16>(p.R());
-  int16 Co = static_cast<int16>(p.G());
-  int16 Cg = static_cast<int16>(p.B());
-
-  int16 t = Y - (Cg >> 1);
-  int16 G = Cg + t;
-  int16 B = t - (Co >> 1);
-  int16 R = Co + B;
-
-  assert(R >= 0);
-  assert(G >= 0);
-  assert(B >= 0);
-
-  Pixel ret;
-  ret.R() = R;
-  ret.G() = G;
-  ret.B() = B;
-  ret.A() = p.A();
-  return ret;
-}
-
-static Pixel Vec4fToPixel(const Vec4f &v) {
-  Pixel p;
-  p.R() = CastChannel(Clamp(0.0f, 255.0f, v[0]));
-  p.G() = CastChannel(Clamp(0.0f, 255.0f, v[1]));
-  p.B() = CastChannel(Clamp(0.0f, 255.0f, v[2]));
+static YCoCgPixel Vec4fToPixel(const Vec4f &v) {
+  YCoCgPixel p;
+  p.Y() = CastChannel(Clamp(0.0f, 255.0f, v[0]));
+  p.Co() = CastChannel(Clamp(0.0f, 255.0f, v[1]));
+  p.Cg() = CastChannel(Clamp(0.0f, 255.0f, v[2]));
   p.A() = CastChannel(Clamp(0.0f, 255.0f, v[3]));
   return p;
 }
@@ -225,7 +189,7 @@ static void PrintPixel(const char *label, const Pixel &p) {
 }
 
 class Region {
-  Pixel m_Endpoints[2];
+  YCoCgPixel m_Endpoints[2];
   std::vector<Pixel>::const_iterator m_PixelItr;
   std::vector<Pixel> m_Pixels;
   std::vector<uint8> m_Interp;
@@ -272,19 +236,19 @@ class Region {
     // Luma...
     float fmin = *min_element(std::begin(firstChannel), std::end(firstChannel));
     float fmax = *max_element(std::begin(firstChannel), std::end(firstChannel));
-    m_Endpoints[0].R() = static_cast<int16>(fmin);
-    m_Endpoints[1].R() = static_cast<int16>(fmax);
+    m_Endpoints[0].Y() = static_cast<int16>(fmin);
+    m_Endpoints[1].Y() = static_cast<int16>(fmax);
 
     m_LumaInterp.reserve(m_Pixels.size());
     m_Interp.reserve(m_Pixels.size());
-    for(const auto &pt : pts) {
-      auto p = pt;
-      float f = p[0];
+    for(uint32 i = 0; i < m_Pixels.size(); i++) {
+      
+      auto p = pts[i];
+      float f = firstChannel[i];
 
       if(b == a) {
         m_Interp.push_back(0);
       } else {
-        p[0] = 255.0f;
         float d = (p - centroid).Dot(axis);
         float nd = (d - a) / (b - a);
         assert(0.0f <= nd && nd <= 1.0f);
@@ -334,14 +298,14 @@ public:
     assert(opaque);
 //    if(opaque) {
 
-      m_Endpoints[0].A() = m_Endpoints[1].A() = 255;
+      m_Endpoints[0][3] = m_Endpoints[1][3] = 255;
 
       for(const auto &p : m_Pixels) {
-        Pixel trans = RGB2YCoCg(p);
+        YCoCgPixel trans = YCoCgPixel(p);
         Vec4f v;
-        v[0] = static_cast<float>(trans.R());
-        v[1] = static_cast<float>(trans.G());
-        v[2] = static_cast<float>(trans.B());
+        v[0] = static_cast<float>(static_cast<int16>(trans.Y()));
+        v[1] = static_cast<float>(static_cast<int16>(trans.Co()));
+        v[2] = static_cast<float>(static_cast<int16>(trans.Cg()));
         v[3] = 255.0f;
         rgbaVecs.push_back(v);
       }
@@ -371,10 +335,10 @@ public:
       float yd = static_cast<float>(y) / 255.0f;
       float vd = static_cast<float>(v) / 255.0f;
 
-      Pixel p = m_Endpoints[0] * (1 - vd) + m_Endpoints[1] * vd;
-      p.R() = m_Endpoints[0].R() * (1 - yd) + m_Endpoints[1].R() * yd;
+      YCoCgPixel p = m_Endpoints[0] * (1 - vd) + m_Endpoints[1] * vd;
+      p.Y() = m_Endpoints[0].Y() * (1 - yd) + m_Endpoints[1].Y() * yd;
 //      PrintPixel("Reconstructed", p);
-      m_Pixels.push_back(YCoCg2RGB(p));
+      m_Pixels.push_back(p.ToRGBA());
     }
 
     ResetPixelItr();
