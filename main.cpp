@@ -16,8 +16,8 @@
 #endif
 
 #include "Vector4.h"
-#include "MatrixSquare.h"
-using FasTC::MatrixSquare;
+#include "Matrix4x4.h"
+using FasTC::Matrix4x4;
 using FasTC::Vec4f;
 
 #include "Pixel.h"
@@ -29,7 +29,7 @@ using FasTC::YCoCgPixel;
 
 #include "SLIC.h"
 
-static MatrixSquare<float, 4> ComputeCovarianceMatrix(
+static Matrix4x4<float> ComputeCovarianceMatrix(
   const std::vector<Vec4f> &points
 ) {
   
@@ -49,7 +49,7 @@ static MatrixSquare<float, 4> ComputeCovarianceMatrix(
     toPts.push_back(p - avg);
   }
   
-  MatrixSquare<float, 4> covMatrix;
+  Matrix4x4<float> covMatrix;
 
   // Compute covariance.
   for(uint32 i = 0; i < 4; i++) {
@@ -113,7 +113,7 @@ static uint32 GetPrincipalAxis(const std::vector<Vec4f> &pts,
     bool collinear = true;
     for(; itr != upts.end(); itr++) {
       Vec4f v = (*itr - upt0);
-      if(fabs(fabs(v.Dot(dir)) - v.Length()) > 1e-7) {
+      if(fabs(fabs(v * dir) - v.Length()) > 1e-7) {
         collinear = false;
         break;
       }
@@ -125,7 +125,7 @@ static uint32 GetPrincipalAxis(const std::vector<Vec4f> &pts,
     }
   }
 
-  MatrixSquare<float, 4> covMatrix = ComputeCovarianceMatrix(pts); 
+  Matrix4x4<float> covMatrix = ComputeCovarianceMatrix(pts); 
   uint32 iters = covMatrix.PowerMethod(axis);
 
 #if 0
