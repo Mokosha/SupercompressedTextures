@@ -26,8 +26,14 @@ using FasTC::YCoCgPixel;
 
 #include "Image.h"
 #include "ImageFile.h"
+#include "StopWatch.h"
+#include "CompressedImage.h"
+
+#include "BPTCCompressor.h"
 
 #include "SLIC.h"
+#include "Partition.h"
+#include "VPTree.h"
 
 static Matrix4x4<float> ComputeCovarianceMatrix(
   const std::vector<Vec4f> &points
@@ -125,41 +131,7 @@ static uint32 GetPrincipalAxis(const std::vector<Vec4f> &pts,
     }
   }
 
-  Matrix4x4<float> covMatrix = ComputeCovarianceMatrix(pts); 
-  uint32 iters = covMatrix.PowerMethod(axis);
-
-#if 0
-  if(NULL != eigTwo) {
-    if(eigOne != 0.0) {
-      RGBAMatrix reduced = covMatrix - eigOne * RGBAMatrix(
-        axis.c[0] * axis.c[0], axis.c[0] * axis.c[1], axis.c[0] * axis.c[2], axis.c[0] * axis.c[3], 
-        axis.c[1] * axis.c[0], axis.c[1] * axis.c[1], axis.c[1] * axis.c[2], axis.c[1] * axis.c[3],
-        axis.c[2] * axis.c[0], axis.c[2] * axis.c[1], axis.c[2] * axis.c[2], axis.c[2] * axis.c[3],
-        axis.c[3] * axis.c[0], axis.c[3] * axis.c[1], axis.c[3] * axis.c[2], axis.c[3] * axis.c[3]
-      );
-      
-      bool allZero = true;
-      for(uint32 i = 0; i < 16; i++) {
-        if(fabs(reduced[i]) > 0.0005) {
-          allZero = false;
-        }
-      }
-
-      if(allZero) {
-        *eigTwo = 0.0;
-      }
-      else {
-        RGBADir dummyDir;
-        iters += PowerIteration(reduced, dummyDir, *eigTwo);
-      }
-    }
-    else {
-      *eigTwo = 0.0;
-    }
-  }
-#endif
-
-  return iters;
+  return ComputeCovarianceMatrix(pts).PowerMethod(axis);
 }
 
 template<typename T>
@@ -367,6 +339,113 @@ void CollectPixels(const uint32 kWidth, const uint32 kHeight,
   }
 }
 
+typedef VpTree<Partition<4, 4>, Partition<4, 4>::Distance> VpTree4x4;
+struct SelectionInfo {
+  VpTree4x4 &tree;
+  const int *labels;
+  const uint32 width;
+  const uint32 height;
+
+  SelectionInfo(VpTree4x4 &_t, const int *l, uint32 w, uint32 h)
+    : tree(_t)
+    , labels(l)
+    , width(w)
+    , height(h)
+  { }
+};
+
+static uint32 kTwoPartitionModes = 
+  static_cast<uint32>(BPTCC::eBlockMode_One) |
+  static_cast<uint32>(BPTCC::eBlockMode_Three) |
+  static_cast<uint32>(BPTCC::eBlockMode_Seven);
+static uint32 kThreePartitionModes =
+  static_cast<uint32>(BPTCC::eBlockMode_Zero) |
+  static_cast<uint32>(BPTCC::eBlockMode_Two);
+#if 0
+static uint32 kAlphaModes =
+  static_cast<uint32>(BPTCC::eBlockMode_Four) |
+  static_cast<uint32>(BPTCC::eBlockMode_Five) |
+  static_cast<uint32>(BPTCC::eBlockMode_Six)  |
+  static_cast<uint32>(BPTCC::eBlockMode_Seven);
+#endif
+
+template<const unsigned N, const unsigned M>
+BPTCC::ShapeSelection ChosePresegmentedShape(
+  uint32 x, uint32 y, const uint32 pixels[16], const void *userData
+) {
+  const SelectionInfo &info = *(reinterpret_cast<const SelectionInfo *>(userData));
+
+  // Construct a partition...
+  Partition<N, M> part;
+
+  static const uint32 kMaxLabelsPerShape = 6;
+  int32 map[kMaxLabelsPerShape];
+  memset(map, 0xFF, sizeof(map));
+
+  bool opaque = true;
+
+  uint32 idx = 0;
+  for(uint32 i = x; i < x+N; i++)
+  for(uint32 j = y; j < y+M; j++) {
+    int label = info.labels[j*info.width + i];
+
+    // Has this label been seen already?
+    uint32 l = 0;
+    for(; l < kMaxLabelsPerShape; l++) {
+      if(map[l] == label) {
+        break;
+      } else if(map[l] < 0) {
+        map[l] = label;
+        break;
+      }
+    }
+
+    assert(l < kMaxLabelsPerShape);
+    part[idx] = l;
+
+    if(((pixels[idx] >> 24) & 0xFF) < 250) {
+      opaque = false;
+    }
+  }
+
+  // Is this a single partition?
+  BPTCC::ShapeSelection result;
+  if(map[1] < 0) {
+    // Turn off two and three shape modes.
+    result.m_SelectedModes &=
+      ~(kThreePartitionModes | kTwoPartitionModes);
+  } else {
+
+    std::vector<Partition<N, M> > closestParts;
+    info.tree.search(part, 1, &closestParts, NULL);
+
+    const Partition<N, M> &closest = closestParts[0];
+    uint8 maxPart = 0;
+    for(uint32 i = 0; i < N*M; i++) {
+      maxPart = std::max(maxPart, closest[i]);
+    }
+
+    if(maxPart < 2) {
+      result.m_TwoShapeIndex = closest.GetIndex();
+      // Turn off three shape modes
+      result.m_SelectedModes &= ~(kThreePartitionModes);
+    } else {
+      result.m_ThreeShapeIndex = closest.GetIndex();
+      // Turn off two shape modes
+      result.m_SelectedModes &= ~(kTwoPartitionModes);      
+    }
+  }
+
+  // If opaque, turn off modes 4 and five...
+  if(opaque) {
+    result.m_SelectedModes &=
+      ~(static_cast<uint32>(BPTCC::eBlockMode_Four) |
+        static_cast<uint32>(BPTCC::eBlockMode_Five));
+  }
+
+  return result;
+}
+
 #ifdef _MSC_VER
 int _tmain(int argc, _TCHAR* argv[]) {
 #else
@@ -433,7 +512,53 @@ int main(int argc, char **argv) {
     pixels[i].Shuffle(0x6C);
   }
 
+  std::vector<Partition<4, 4> > partitions;
+  EnumerateBPTC(partitions);
+  std::cout << partitions.size() << " 4x4 BPTC partitions" << std::endl;
+
+  VpTree<Partition<4, 4>, Partition<4, 4>::Distance> vptree;
+  vptree.create(partitions);
+
+  // Just to test, find the partition close to half 0 half 1..
+  Partition<4, 4> test;
+  for(uint32 i = 0; i < 16; i++) {
+    if(i < 8) {
+      test[i] = 0;
+    } else {
+      test[i] = 1;
+    }
+  }
+
+  vector<Partition<4, 4> > closest;
+  vptree.search(test, 1, &closest, NULL);
+  std::cout << closest[0].GetIndex() << std::endl;
+
+  BPTCC::CompressionSettings settings;
+  settings.m_NumSimulatedAnnealingSteps = 0;
+  settings.m_ShapeSelectionFn = ChosePresegmentedShape<4, 4>;
+
+  SelectionInfo info(vptree, labels, kWidth, kHeight);
+  settings.m_ShapeSelectionUserData = &info;
+
+  uint8 *outBuf = new uint8[kWidth * kHeight];
+  FasTC::CompressionJob cj(
+     FasTC::eCompressionFormat_BPTC,
+     reinterpret_cast<const uint8 *>(pixels),
+     outBuf,
+     static_cast<uint32>(kWidth),
+     static_cast<uint32>(kHeight));
+
+  StopWatch sw;
+  sw.Start();
+  BPTCC::Compress(cj, settings);
+  sw.Stop();
+  std::cout << "Compression time: " << sw.TimeInMilliseconds() << "ms" << std::endl;
+
+  CompressedImage ci(kWidth, kHeight, FasTC::eCompressionFormat_BPTC, outBuf);
   FasTC::Image<> outImg(kWidth, kHeight, pixels);
+
+  std::cout << "PSNR: " << outImg.ComputePSNR(&ci) << "db" << std::endl;
+
   ImageFile outImgFile("out.png", eFileFormat_PNG, outImg);
   outImgFile.Write();
 
